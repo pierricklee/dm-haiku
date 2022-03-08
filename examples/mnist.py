@@ -23,18 +23,23 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import tensorflow_datasets as tfds
+from jaxlib import ipu_xla_client
 
 OptState = Any
 Batch = Mapping[str, np.ndarray]
 
+
+cfg = ipu_xla_client.config.IPUConfig()
+cfg.auto_select_ipus = 1
+cfg.configure_ipu_system()
 
 def net_fn(batch: Batch) -> jnp.ndarray:
   """Standard LeNet-300-100 MLP network."""
   x = batch["image"].astype(jnp.float32) / 255.
   mlp = hk.Sequential([
       hk.Flatten(),
-      hk.Linear(300), jax.nn.relu,
-      hk.Linear(100), jax.nn.relu,
+      # hk.Linear(300), jax.nn.relu,
+      # hk.Linear(100), jax.nn.relu,
       hk.Linear(10),
   ])
   return mlp(x)
@@ -103,12 +108,14 @@ def main(_):
 
   # Make datasets.
   train = load_dataset("train", is_training=True, batch_size=1000)
-  train_eval = load_dataset("train", is_training=False, batch_size=10000)
+  train_eval = load_dataset("train", is_training=False, batch_size=1000)
   test_eval = load_dataset("test", is_training=False, batch_size=10000)
 
   # Initialize network and optimiser; note we draw an input to get shapes.
+  print('Before init params.')
   params = avg_params = net.init(jax.random.PRNGKey(42), next(train))
   opt_state = opt.init(params)
+  print('After init params')
 
   # Train/eval loop.
   for step in range(10001):
