@@ -24,11 +24,12 @@ import numpy as np
 import optax
 import tensorflow_datasets as tfds
 from jaxlib import ipu_xla_client
+import os 
 
 OptState = Any
 Batch = Mapping[str, np.ndarray]
 
-
+# input("pid: " + str(os.getpid()))
 cfg = ipu_xla_client.config.IPUConfig()
 cfg.auto_select_ipus = 1
 cfg.configure_ipu_system()
@@ -77,10 +78,11 @@ def main(_):
     return softmax_xent + 1e-4 * l2_loss
 
   # Evaluation metric (classification accuracy).
-  @jax.jit
+  # @jax.jit
   def accuracy(params: hk.Params, batch: Batch) -> jnp.ndarray:
     predictions = net.apply(params, batch)
-    return jnp.mean(jnp.argmax(predictions, axis=-1) == batch["label"])
+    # return jnp.mean(jnp.argmax(predictions, axis=-1) == batch["label"])
+    return jnp.mean(np.argmax(predictions, axis=-1) == batch["label"]) 
 
   @jax.jit
   def update(
