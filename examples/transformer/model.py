@@ -35,6 +35,9 @@ class CausalSelfAttention(hk.MultiHeadAttention):
     key = key if key is not None else query
     value = value if value is not None else query
 
+    if query.ndim != 3:
+      raise ValueError('Expect queries of shape [B, T, D].')
+
     seq_len = query.shape[1]
     causal_mask = np.tril(np.ones((seq_len, seq_len)))
     mask = mask * causal_mask if mask is not None else causal_mask
@@ -79,14 +82,12 @@ class Transformer(hk.Module):
                mask: Optional[jnp.ndarray],
                is_training: bool) -> jnp.ndarray:
     """Connects the transformer.
-
     Args:
-      h: Inputs, [B, T, H].
+      h: Inputs, [B, T, D].
       mask: Padding mask, [B, T].
       is_training: Whether we're training or not.
-
     Returns:
-      Array of shape [B, T, H].
+      Array of shape [B, T, D].
     """
 
     init_scale = 2. / self._num_layers
@@ -100,7 +101,8 @@ class Transformer(hk.Module):
       h_norm = layer_norm(h, name=f'h{i}_ln_1')
       h_attn = CausalSelfAttention(
           num_heads=self._num_heads,
-          key_size=64,
+          key_size=32,
+          model_size=h.shape[-1],
           w_init_scale=init_scale,
           name=f'h{i}_attn')(h_norm, mask=mask)
       h_attn = hk.dropout(hk.next_rng_key(), dropout_rate, h_attn)

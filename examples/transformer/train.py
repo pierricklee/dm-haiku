@@ -12,17 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Train a transformer for language modeling on LM1B.
-
+r"""Train a transformer for language modeling on a small text dataset.
 This example serves to demonstrate:
   - A clean Haiku transformer implementation.
   - An example minimal training loop around it.
-
-We have not tuned the hyperparameters for LM1B at all.
-
+This example runs on ASCII text files.
+We have not tuned the hyperparameters at all.
+Example, using Karpathy's tiny_shakespeare dataset:
+$ wget -O /tmp/shakespeare.txt \
+    https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+$ python3 examples/transformer/train.py --dataset_path=/tmp/shakespeare.txt
 Note: Run with --alsologtostderr to see outputs.
 """
 
+from jaxlib import ipu_xla_client
+import os 
+cfg = ipu_xla_client.config.IPUConfig()
+cfg.auto_select_ipus = 1
+cfg.configure_ipu_system()
+# input("pid: " + str(os.getpid()))
 import functools
 import os
 import pickle
@@ -33,31 +41,34 @@ from absl import app
 from absl import flags
 from absl import logging
 import haiku as hk
-from examples.transformer import dataset
-from examples.transformer import model
+import dataset
+import model
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import tensorflow.compat.v2 as tf
 
-flags.DEFINE_integer('batch_size', 16, 'Train batch size per core')
-flags.DEFINE_integer('sequence_length', 128, 'Sequence length to learn on')
+flags.DEFINE_string('dataset_path', None, 'Single-file ASCII dataset location.')
 
-flags.DEFINE_integer('d_model', 256, 'model width')
+flags.DEFINE_integer('batch_size', 2, 'Train batch size per core')
+flags.DEFINE_integer('sequence_length', 64, 'Sequence length to learn on')
+
+flags.DEFINE_integer('d_model', 128, 'model width')
 flags.DEFINE_integer('num_heads', 4, 'Number of attention heads')
-flags.DEFINE_integer('num_layers', 6, 'Number of transformer layers')
+flags.DEFINE_integer('num_layers', 4, 'Number of transformer layers')
 flags.DEFINE_float('dropout_rate', 0.1, 'Dropout rate')
 
-flags.DEFINE_float('learning_rate', 2e-4, 'Max learning-rate')
-flags.DEFINE_float('grad_clip_value', 0.25, 'Gradient norm clip value')
+flags.DEFINE_float('learning_rate', 3e-4, 'Max learning-rate')
+flags.DEFINE_float('grad_clip_value', 1, 'Gradient norm clip value')
 
-flags.DEFINE_string('checkpoint_dir', '/tmp/haiku-lm1b',
+flags.DEFINE_string('checkpoint_dir', '/tmp/haiku-transformer',
                     'Directory to store checkpoints.')
 
 FLAGS = flags.FLAGS
 LOG_EVERY = 50
-MAX_STEPS = 10**6
+# MAX_STEPS = 10**6
+MAX_STEPS = 1000
+
 
 
 def build_forward_fn(vocab_size: int, d_model: int, num_heads: int,
@@ -110,7 +121,6 @@ def lm_loss_fn(forward_fn,
 
 class Updater:
   """A stateless abstraction around an init_fn/update_fn pair.
-
   This extracts some common boilerplate from the training loop.
   """
 
@@ -121,9 +131,9 @@ class Updater:
     self._opt = optimizer
 
   @functools.partial(jax.jit, static_argnums=0)
-  def init(self, master_rng, data):
+  def init(self, rng, data):
     """Initializes state of the updater."""
-    out_rng, init_rng = jax.random.split(master_rng)
+    out_rng, init_rng = jax.random.split(rng)
     params = self._net_init(init_rng, data)
     opt_state = self._opt.init(params)
     out = dict(
@@ -160,7 +170,6 @@ class Updater:
 
 class CheckpointingUpdater:
   """A didactic checkpointing wrapper around an Updater.
-
   A more mature checkpointing implementation might:
     - Use np.savez() to store the core data instead of pickle.
     - Not block JAX async dispatch.
@@ -185,7 +194,7 @@ class CheckpointingUpdater:
       return self._inner.init(rng, data)
     else:
       checkpoint = os.path.join(self._checkpoint_dir,
-                                self._checkpoint_paths()[-1])
+                                max(self._checkpoint_paths()))
       logging.info('Loading checkpoint from %s', checkpoint)
       with open(checkpoint, 'rb') as f:
         state = pickle.load(f)
@@ -210,19 +219,25 @@ class CheckpointingUpdater:
 
 
 def main(_):
+  FLAGS.alsologtostderr = True  # Always log visibly.
   # Create the dataset.
-  train_dataset, vocab_size = dataset.load(FLAGS.batch_size,
-                                           FLAGS.sequence_length)
+  train_dataset = dataset.AsciiDataset(
+      FLAGS.dataset_path, FLAGS.batch_size, FLAGS.sequence_length)
+  vocab_size = train_dataset.vocab_size
+
   # Set up the model, loss, and updater.
+  print("Before forward_fn")
   forward_fn = build_forward_fn(vocab_size, FLAGS.d_model, FLAGS.num_heads,
                                 FLAGS.num_layers, FLAGS.dropout_rate)
   forward_fn = hk.transform(forward_fn)
   loss_fn = functools.partial(lm_loss_fn, forward_fn.apply, vocab_size)
 
+  print("Before optimizer optax.chain")
   optimizer = optax.chain(
       optax.clip_by_global_norm(FLAGS.grad_clip_value),
       optax.adam(FLAGS.learning_rate, b1=0.9, b2=0.99))
 
+  print("Before updater, Updater, CheckpointingUpdater")
   updater = Updater(forward_fn.init, loss_fn, optimizer)
   updater = CheckpointingUpdater(updater, FLAGS.checkpoint_dir)
 
@@ -233,6 +248,7 @@ def main(_):
   state = updater.init(rng, data)
 
   logging.info('Starting train loop...')
+#   input("pid: " + str(os.getpid()))
   prev_time = time.time()
   for step in range(MAX_STEPS):
     data = next(train_dataset)
@@ -248,5 +264,5 @@ def main(_):
 
 
 if __name__ == '__main__':
-  tf.enable_v2_behavior()
+  flags.mark_flag_as_required('dataset_path')
   app.run(main)
